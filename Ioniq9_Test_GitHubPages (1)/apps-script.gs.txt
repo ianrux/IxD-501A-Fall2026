@@ -1,0 +1,46 @@
+/**
+ * Ioniq 9 usability test -> Google Sheet
+ * Paste into Extensions > Apps Script in the "Ioniq 9 Usability Test Results" sheet,
+ * then Deploy > New deployment > Web app (Execute as: Me, Who has access: Anyone).
+ * The prototype sends a session after every task; each send replaces that session's rows,
+ * so you always see the latest state of each run, with no duplicates.
+ */
+const SESSION_HEAD = ['Run ID','Started','Finished','Completed','Exited early','Preview','Consent','Drive length','Screen',
+  'SUS score','B1 attention','B2 mistakes','Hazards shown','Hazards hit','Hazards missed','False alarms','Mean reaction (ms)',
+  'Lane assist answer','Lane assist why','Closing Q1','Closing Q2','Closing Q3','SUS answers (A1-A10)','Raw JSON'];
+const TASK_HEAD = ['Run ID','Task','Name','Success','Skipped','Timed out','Duration (s)','Ease (1-5)','Taps','Tap path',
+  'Hazards in task','Hazards missed in task','Detail'];
+
+function doPost(e) {
+  const lock = LockService.getScriptLock(); lock.waitLock(20000);
+  try {
+    const r = JSON.parse(e.postData.contents);
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const s = tab_(ss, 'Sessions', SESSION_HEAD), t = tab_(ss, 'Tasks', TASK_HEAD);
+    const hz = r.hazards || {}, lane = r.laneFollowUp || {}, c = r.closing || {}, sus = r.sus || {}, d = r.driving || {};
+    const row = [r.runId, r.startedAt, r.finishedAt || '', !!r.completed, !!r.exitedEarly, !!r.preview, r.consent || '', r.length || '', r.screen || '',
+      sus.score ?? '', d.b1 ?? '', d.b2 ?? '', hz.shown ?? '', hz.hits ?? '', hz.misses ?? '', hz.falseAlarms ?? '', hz.meanRtMs ?? '',
+      lane.answer || '', lane.why || '', c.q1 || '', c.q2 || '', c.q3 || '', (sus.answers || []).join(','), JSON.stringify(r).slice(0, 45000)];
+    replace_(s, r.runId, [row]);
+    const rows = (r.tasks || []).map(k => [r.runId, k.id, k.name, !!k.success, !!k.skipped, !!k.timedOut,
+      k.durationMs != null ? Math.round(k.durationMs / 100) / 10 : '', k.ease ?? '', (k.taps || []).length,
+      (k.taps || []).map(x => x.el).join(' > ').slice(0, 2000),
+      (k.hazards || []).length, (k.hazards || []).filter(h => h.rt == null).length, JSON.stringify(k.detail || {})]);
+    replace_(t, r.runId, rows);
+    return ContentService.createTextOutput('ok');
+  } finally { lock.releaseLock(); }
+}
+
+function tab_(ss, name, head) {
+  let sh = ss.getSheetByName(name);
+  if (!sh) { sh = ss.insertSheet(name); sh.appendRow(head); sh.setFrozenRows(1); sh.getRange(1, 1, 1, head.length).setFontWeight('bold'); }
+  return sh;
+}
+function replace_(sh, runId, rows) {
+  const n = sh.getLastRow();
+  if (n > 1) {
+    const ids = sh.getRange(2, 1, n - 1, 1).getValues();
+    for (let i = ids.length - 1; i >= 0; i--) if (ids[i][0] === runId) sh.deleteRow(i + 2);
+  }
+  if (rows.length) sh.getRange(sh.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+}
